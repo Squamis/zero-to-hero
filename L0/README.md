@@ -25,14 +25,27 @@ GSM8K test split, 50 problems sampled with `seed=42`. Grading: extract the final
 
 > You can articulate which techniques helped which task type, with measurable evidence.
 
-We expect to see (rough order-of-magnitude based on the original CoT paper):
-- zero-shot ≈ role ≈ 15–25%
-- few-shot ≈ 20–30% (small lift, no reasoning shown)
-- zero-shot CoT ≈ 30–40%
-- few-shot CoT ≈ 35–50%
-- self-consistency ≈ 40–55%
+## Actual results
 
-If the actual numbers diverge sharply, that's the lesson — figure out why.
+Two models, same prompts, same 50-problem GSM8K subset (seed=42).
+
+| Technique | mistral-7b-instruct-v0.1 | gpt-3.5-turbo-instruct |
+|---|---:|---:|
+| zero-shot | 38% | 36% |
+| role | 22% | 40% |
+| few-shot (answer-only) | 12% | 26% |
+| zero-shot CoT | 40% | 42% |
+| few-shot CoT | 36% | **80%** |
+| self-consistency (N=5) | 38% | **84%** |
+
+See `results/comparison.png` for the visual.
+
+**Observations**:
+- On `gpt-3.5-turbo-instruct` (a true pre-CoT-era completion model), the techniques work as the original papers describe — few-shot CoT doubles zero-shot, self-consistency adds another 4 points on top.
+- On `mistralai/mistral-7b-instruct-v0.1` (a modern instruct model from the same era), the same techniques produce flat or negative deltas. The model already does CoT and self-consistency internally; layering more prompting on top doesn't help and sometimes interferes.
+- Role prompting is model-dependent: -16 on Mistral, +4 on GPT-3.5-instruct.
+- Few-shot answer-only is *destructive* on both: -26 on Mistral, -10 on GPT. The Wei et al. failure mode is real and generalizes.
+- This is the core lesson of L0: **prompt engineering is the layer the current frontier model doesn't yet do for you. As models absorb techniques into their default behavior, the deltas vanish.**
 
 ## Run
 

@@ -8,6 +8,7 @@ under the hood. Few-shot exemplars are drawn from the GSM8K training split
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 
 from client import complete
 from grader import extract_answer
@@ -94,12 +95,12 @@ SELF_CONSISTENCY_N = 5
 def self_consistency(question: str) -> float | None:
     blocks = [f"Question: {ex['q']}\nAnswer: {ex['a']}" for ex in FEW_SHOT_EXEMPLARS]
     prompt = "\n\n".join(blocks) + f"\n\nQuestion: {question}\nAnswer:"
-    answers: list[float] = []
-    for _ in range(SELF_CONSISTENCY_N):
-        out = complete(prompt, temperature=0.7, max_tokens=768)
-        ans = extract_answer(out)
-        if ans is not None:
-            answers.append(ans)
+
+    def _sample(_):
+        return extract_answer(complete(prompt, temperature=0.7, max_tokens=768))
+
+    with ThreadPoolExecutor(max_workers=SELF_CONSISTENCY_N) as ex:
+        answers = [a for a in ex.map(_sample, range(SELF_CONSISTENCY_N)) if a is not None]
     if not answers:
         return None
     return Counter(answers).most_common(1)[0][0]

@@ -5,3 +5,4 @@ __pycache__/
 .DS_Store
 L0/data/raw/
 .cache/
+*.log
