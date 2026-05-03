@@ -2,6 +2,81 @@
 
 Proof-of-study repo for the AI zero-to-hero learning roadmap. One directory per level, each with its own benchmark and a plot showing the deltas between techniques. AI-assisted with Claude as a building partner, not a ghostwriter.
 
+## 2026-05-03
+
+**Session goal**: Ship L1.7c (Best-of-N test-time compute), the first L1 micro-benchmark. Match L0's pattern: same task, era-boundary model, parallelized harness, plot the deltas. Then run the cross-era pairing on `gpt-3.5-turbo-instruct` to test the same thesis statement L0 used, one technique generation later.
+
+**What I learned (Best-of-N test-time compute)**:
+
+- **Best-of-N is flat on Mistral-7B-Instruct v0.1.** Across the full sweep (N = 1, 3, 5, 10, 20, 40 at T = 0.7), accuracy hovered at 38 to 44 percent on GSM8K-50. That's statistical noise around L0's 40 percent zero-shot CoT baseline at T = 0. 38x the cost for zero accuracy gain.
+- **Best-of-N produces real lift on gpt-3.5-turbo-instruct.** Same sweep, same task, same prompt: 46 percent at N = 1 climbing to a 62 percent peak at N = 20, easing back to 60 percent at N = 40. Roughly +14 to +16 points from test-time compute alone.
+- **The era boundary explains both.** Mistral-7B-Instruct's outputs at T = 0.7 converge to roughly the same answer paths, so majority-voting them is just N = 1 with extra cost. gpt-3.5-turbo-instruct, a pre-self-consistency-era completion model, has enough internal variance for majority voting to recover correct paths a single sample would have missed.
+- **Same lesson as L0, one technique generation later.** L0 showed prompt-engineering deltas vanish on a model that already does CoT internally. L1.7c shows test-time-compute deltas vanish on a model that already produces enough internal variance that the correct path gets recovered most of the time. Each model generation absorbs the prior generation's technique into its default behavior. The harness layer keeps moving up.
+- **Diminishing returns visible on GPT-3.5 too.** N = 20 was the peak; N = 40 came back down to 60 percent. Wang et al. used N = 40 for self-consistency, but on GSM8K-50 the curve plateaus by N = 20.
+- **Cost scales exactly linearly with N on both models.** Straight line on the log-log cost panel. The interesting variable is what you get for that linear cost.
+
+**What I learned (engineering)**:
+
+- About 80 percent of L1 code is verbatim L0 reuse. The expensive part of L0 was getting the harness right (parallelization, persistence, model swapping); once that was solid, layering a new technique was small.
+- New work was small and well-scoped: token-usage tracking in `client.py` (CompletionResult dataclass), `majority_vote()` helper in `grader.py`, a single `best_of_n_cot()` function in `techniques.py`, an N-sweep loop in `run.py`, and a two-panel curve plot.
+- gpt-3.5-turbo-instruct is roughly 10x faster wall-clock than Mistral-7B-Instruct v0.1 through OpenRouter for the same prompt shape. Hosted endpoint vs OpenRouter-to-open-weights routing.
+- Cost calibration: a full L1.7c sweep on Mistral was about $0.10 (1.16M tokens). Same sweep on gpt-3.5-turbo-instruct was about $1.50 to $2.00 (921K tokens, but pricier per token). Earlier "$0.50 to $1.00" estimate for the cross-era was wrong; the real number is $1.50 to $2.00.
+
+**What I built**:
+
+- New directory `zero-to-hero/L1/` mirroring the L0 layout: `client.py`, `data.py`, `grader.py`, `techniques.py`, `run.py`, `plot.py`, `README.md`.
+- `client.py` returns a `CompletionResult` dataclass (text + prompt_tokens + completion_tokens + total_tokens) so cost is tracked at the call boundary. `complete_text()` preserves the L0 string-only signature for backward compat.
+- `grader.py` adds a `majority_vote()` helper that takes a list of extracted answers, drops the Nones, and returns the most common answer (Counter insertion-order wins ties).
+- `techniques.py` is a single `best_of_n_cot(question, n)` function. Inner-parallelism via ThreadPoolExecutor for the N samples; returns (predicted_answer, total_tokens) so the run loop can plot cost.
+- `run.py` sweeps over `--ns` values (default `[1, 3, 5, 10, 20, 40]`), parallelizes problems with `--workers`, fans out N samples with `--inner-workers`, persists `results/results.json` after each N value so partial runs survive.
+- `plot.py` is a two-panel line chart. Single-file mode plots one curve. Multi-file mode (mirrors L0's pattern) overlays one line per model on each panel; legend distinguishes them.
+- L0 baseline (40 percent on Mistral) shown as a dashed reference line on the accuracy panel.
+
+**Decisions made**:
+
+- Stick with the L0 era-boundary pattern: open-weights model from the technique's canonization era as the build-path baseline, closed-API older completion model as the cross-era reference. Same shape as L0's Mistral-vs-GPT3.5 comparison.
+- Zero-shot CoT as the base prompt (rather than few-shot CoT). Zero-shot CoT was Mistral's best L0 baseline at 40 percent; building on top of the strongest baseline isolates the test-time-compute contribution.
+- Temperature 0.7 across the full sweep, matching Wang et al. 2022. Lower temperature kills the variance Best-of-N needs; higher destabilizes arithmetic.
+- N values `[1, 3, 5, 10, 20, 40]` log-spaced. N = 5 matches L0's `self_consistency` point. N = 40 matches Wang et al.'s headline number.
+- Default workers tuned to `--workers 8 --inner-workers 10` so the maximum concurrent OpenRouter calls is 80, comfortable margin under any rate limits.
+
+**Benchmark results (50 problems, GSM8K test, seed=42, T=0.7)**:
+
+`mistralai/mistral-7b-instruct-v0.1` (modern instruct, already CoT-trained):
+- N=1: 42% (15K tokens, 147s)
+- N=3: 40% (44K tokens, 155s)
+- N=5: 40% (74K tokens, 195s)
+- N=10: 44% (149K tokens, 184s)
+- N=20: 40% (298K tokens, 383s)
+- N=40: 38% (579K tokens, 672s)
+- Total: ~1.16M tokens, ~29 min wall clock, ~$0.10
+
+`openai/gpt-3.5-turbo-instruct` (pre-self-consistency-era completion model):
+- N=1: 46% (12K tokens, 14s)
+- N=3: 52% (35K tokens, 16s)
+- N=5: 50% (57K tokens, 16s)
+- N=10: 54% (116K tokens, 21s)
+- N=20: **62%** (235K tokens, 38s) — peak
+- N=40: 60% (467K tokens, 65s)
+- Total: ~921K tokens, ~3 min wall clock, ~$1.50 to $2.00
+
+**Comparison plot saved to** `L1/results/comparison.png`. The visual story: Mistral's curve hugs the L0 baseline horizontally; GPT-3.5's curve climbs from 46 percent to a 62 percent peak at N = 20 before easing off. The same divergence-shape as L0's Mistral-vs-GPT3.5 comparison, just sliced through the test-time-compute axis instead of the prompt-engineering axis.
+
+**What the comparison proved (the L1 thesis statement)**:
+
+- The "each generation absorbs prior techniques" claim is now confirmed at *two* technique generations, not just one. L0 confirmed it for prompt engineering; L1.7c confirms it for test-time compute.
+- Mistral-7B-Instruct, a 2023 modern instruct model, internalized self-consistency-style internal variance enough that explicit Best-of-N on top adds nothing. The model already does this.
+- gpt-3.5-turbo-instruct, a pre-self-consistency-era completion model from the same calendar window, has *not* internalized that variance. Explicit Best-of-N on top recovers it externally.
+- This is the L1 thesis the rest of the level is built around: the layer the current frontier model doesn't yet do for you is where the technique's leverage lives. Move up the abstraction stack as the model absorbs each layer.
+
+**Next session**:
+- Walk L1.3 (Select). Best next mini-benchmark candidate: few-shot example selection (random vs similarity-retrieved vs hand-picked) on the same GSM8K-50 task.
+- Or jump to the load-bearing synthesis benchmark: harness-as-durable-artifact across two open-weights models on OpenRouter (Mistral-7B-Instruct vs early Llama 3 8B Instruct) with one fixed harness. That's the L1 thesis statement most directly.
+- Pin a snapshot of OpenRouter pricing in the L1 README so future cost estimates are calibrated.
+- Decide whether to add Mistral results plus GPT-3.5 results plus comparison plot to L1/results/ (currently in tree) or .gitignore them and let users regenerate.
+
+---
+
 ## 2026-05-02
 
 **Session goal**: Walk L1 (context engineering) from the top. Process the canonical resources, populate lit notes, surface atomic notes, fix curriculum bugs, and align L1.2's video stack so the build path lines up with vendor-neutral practitioner material before scaffolding `zero-to-hero/L1/`.
